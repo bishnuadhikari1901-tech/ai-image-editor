@@ -1,60 +1,45 @@
 import streamlit as st
-import requests
 import io
-from PIL import Image
+import uuid # Generates a totally random, unique name for every image file
+from supabase import create_client, Client
 
-# 1. Page Settings
-st.set_page_config(page_title="AI Image Transformer", layout="centered")
-st.title("🎨 Free AI Image-to-Image Converter")
-st.write("Upload an image, give a text prompt, and watch the AI redesign it!")
+# 1. Connect securely to Supabase using settings keys
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 
-# 2. Get API Token securely from settings
-HF_TOKEN = st.secrets.get("HF_TOKEN", "")
+# Initialize the Supabase program client helper
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+else:
+    supabase = None
 
-# Using an open-source image editing model
-API_URL = "https://api-inference.huggingface.co/models/stable-diffusion-v1-5/stable-diffusion-v1-5"
-headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+# 2. Main File Uploader Widget element
+uploaded_file = st.file_uploader("Upload your starting image", type=["jpg", "jpeg", "png"])
 
-# 3. Sidebar adjustments
-st.sidebar.header("AI Control Panel")
-strength = st.sidebar.slider("Change Intensity", min_value=0.1, max_value=0.9, value=0.6, step=0.05)
-st.sidebar.caption("Higher changes the image drastically. Lower keeps it close to original structure.")
-
-# 4. Image upload layout
-uploaded_file = st.file_uploader("Step 1: Upload your starting image (JPG/PNG)", type=["jpg", "jpeg", "png"])
-prompt = st.text_input("Step 2: Describe what the AI should change or add", placeholder="e.g., Make it look like a futuristic cyberpunk city skyline")
-
-if uploaded_file is not None:
-    init_image = Image.open(uploaded_file)
-    st.image(init_image, caption="Original Image", use_container_width=True)
+if uploaded_file is not None and supabase is not None:
+    # Read raw image upload bytes
+    file_bytes = uploaded_file.getvalue()
     
-    # 5. Execution button
-    if st.button("✨ Transform Image"):
-        if not prompt:
-            st.error("Please provide a text prompt first!")
-        elif not HF_TOKEN:
-            st.error("API Key missing! Please add HF_TOKEN to your Streamlit Advanced Settings.")
-        else:
-            with st.spinner("The AI is processing your image... (may take 15-30 seconds)"):
-                try:
-                    # Convert image file to bytes payload
-                    img_byte_arr = io.BytesIO()
-                    init_image.save(img_byte_arr, format=init_image.format)
-                    img_bytes = img_byte_arr.getvalue()
-
-                    payload = {
-                        "inputs": img_bytes,
-                        "parameters": {"prompt": prompt, "strength": strength}
-                    }
-
-                    # Ask Hugging Face to process the image
-                    response = requests.post(API_URL, headers=headers, json=payload)
-                    
-                    if response.status_code == 200:
-                        output_image = Image.open(io.BytesIO(response.content))
-                        st.success("All done!")
-                        st.image(output_image, caption="AI Transformed Image", use_container_width=True)
-                    else:
-                        st.error(f"AI Server busy or error. Try again in a few seconds. Status: {response.status_code}")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+    # Check if user clicked a trigger save button
+    if st.button("💾 Save Permanently to Cloud Vault"):
+        with st.spinner("Uploading to Supabase cloud storage..."):
+            try:
+                # Generate a unique file pathway like: uploads/abc-123-xyz.png
+                file_extension = uploaded_file.name.split(".")[-1]
+                unique_filename = f"uploads/{uuid.uuid4()}.{file_extension}"
+                
+                # Execute upload stream right into your storage bucket named 'user-images'
+                response = supabase.storage.from_("user-images").upload(
+                    path=unique_filename,
+                    file=file_bytes,
+                    file_options={"content-type": uploaded_file.type}
+                )
+                
+                # Extract the permanent live public web asset link URL
+                public_url = supabase.storage.from_("user-images").get_public_url(unique_filename)
+                
+                st.success("Successfully saved to the cloud forever!")
+                st.info(f"Permanent Cloud URL: {public_url}")
+                
+            except Exception as e:
+                st.error(f"Cloud Upload Failed: {e}")
